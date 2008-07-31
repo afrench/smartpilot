@@ -1,170 +1,131 @@
+
 #include <SoftwareSerial.h>
 #include <Wire.h>
-#include "smartpilot.h"
+//#include "smartpilot.h"
 
-int headings[10];
-unsigned int counter = 0;
-int motor_command[4]; //duty_cycle, period, on_time, direction
+int  youreOK = 1;     //a flag accessible by several functions. If it ever goes low alarm should sound;
+int alarmPin = 1;    //location of alarm pin
+int heading[10];
+int desired_heading;      //the heading we'd like to hold
+int heading_data[3];
+int course_delta[3]; //subtract Present - Past
+int course_derivative[2]; //subtract Present - Past
+float ndderivative;
+float spoke_proportional;   //number of spokes from proportional
+float spoke_derivative;    //number of spokes fromderivative
+float spoke_ndderivative;  //number of spokes from second derivative
+float k_proportional;  //constnat for proportional
+float k_derivative;    //constant for derivative 
+float k_ndderivative;      //constant for second derivative
+float k_spoke_time;    //constant defines a spoke
+float spoke_total;          //sum of all spoke times in miliseconds
+int period;          //how frequently you sample, after 3 samples you run spokulator. 
+int on_time;
 
 void setup (){
-  int count;
   Serial.begin(9600); 
-  youreOK = 1;			//initialize sate as all ok
+  youreOK = 1;		       //initialize sate as all ok
+  period = 3000;                //time between samples. after 3 samples we run spokulator
+  k_proportional = 1;     //constant applied to course_delta in spokulator
+  k_derivative = 1;        //constant applied to rate of course change in spokulator
+  k_ndderivative = .5;     //constant applied to rate of change of rate of change in spokulator
+  k_spoke_time = 25;      //time in miliseconds to run the motor for every spoke.
+  spoke_total = 0;         //initialize at zero  
+  on_time = 0;
   setup_motor();
   setup_compass();
   delay(1000);  //wait for the first bit of spurious data to pass
-  int sum=0;
-  for( int i=0; i<10; i++){
-    headings[i]= get_current_heading();
-    sum += headings[i];
+  desired_heading = read_compass();
+}
+
+void loop (){  
+    //Serial.print("desired_heading: ");
+    //Serial.println(int (desired_heading));
+    for (int i=0; i<2; i++){
+      heading_data[i]= read_compass();
+      delay (period);
+    }
+    //Serial.print ("current_heading: ");
+    //Serial.println (heading_data[0]);  
+    course_delta[0] = heading_data[0] - desired_heading;
+    Serial.print ("course_delta[0]: ");
+    Serial.println (course_delta[0]);
+    course_delta[1] = heading_data[1] - desired_heading;
+    course_delta[2] = heading_data[2] - desired_heading;
+    course_derivative[0] = (heading_data[0] - heading_data[1])/(period/100);
+    course_derivative[1] = (heading_data[1] - heading_data[2])/(period/100);
+    ndderivative = (course_derivative[0] - course_derivative[1])/(period/100);
+    spokulator ();
+    turn (on_time);
   }
-  desired_heading = sum/10;
-}
-
-int average_heading;
-int count_down=0;
-void loop (){
-    while (youreOK){    
-      if ( (counter % 100) ==  0 ){  //update timeaveraged heading every 300 cycles
-        update_heading_stack();
-        // Serial.print(int(counter));
-      }
-      if ( (counter % 50000) ==  0 ){  //take course correcting action on a much less frequent basis
-        average_heading = get_heading();
-        course_delta = desired_heading - average_heading;
-        Serial.print(int (counter));
-        Serial.print(":  Current heading: ");
-        Serial.print(int (average_heading));
-        Serial.print("\tcourse_delta: ");
-        Serial.print(int (course_delta));
-        Serial.print("\tdesired_heading: ");
-        Serial.println(int (desired_heading));
-        course_correction(course_delta);
-          turn(motor_command[0], motor_command[1], motor_command[2], motor_command[3]);
-          // Serial.print(int (course_delta));
-          if (motor_command[2]>0)
-            Serial.println(" correcting course");
-        counter = 0;
-      }
-      counter++;
-   } 
-}
 
 
+//end of main section
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-//begin definitiion of Motor functions
-
+//begin definition of Motor functions
+  
+int port_pin = 2;   //pin on Arduino board that will turn the boat to port when energized
+int starboard_pin = 3;
+  
 int setup_motor(){
  //set initial state of motor to off
  pinMode(2, OUTPUT);
  pinMode(3, OUTPUT);
- digitalWrite(2, HIGH); 
+ digitalWrite(2, LOW); 
  digitalWrite(3, LOW); 
- pinMode(4, OUTPUT);
- pinMode(5, OUTPUT);
- digitalWrite(4, HIGH); 
- digitalWrite(5, LOW); 
 }
 
-int turn(int duty_cycle, int period, int on_time, int turn_direction){
-  //if turn_direction is negative turn port, else starboard
-  int on_pulse_width = period*duty_cycle/100;
-  int pulse_count = on_time/period;
-  int top_pin;
-  int bottom_pin;
+int turn(int on_time){
   
-  Serial.print("  -- Turning for ");
-  Serial.println( int(on_time));
-  
-  if (turn_direction<0){
-   top_pin = 2;   //when top pin is high and bottom is low, state is off
-   bottom_pin = 3; 
+  Serial.print("  Starting a ");
+  Serial.print(int(on_time));
+  Serial.println(" turn. ");
+  if (on_time < 0){
+    digitalWrite(port_pin, HIGH); 
   }
-   else if (turn_direction>0){
-   top_pin = 4;   //when top pin is high and bottom is low, state is off
-   bottom_pin = 5; 
+   else if (on_time > 0){
+     digitalWrite(starboard_pin, HIGH); 
   }
   else{
     return 0;
   }
-  
-  for (int i=0; i < pulse_count; i++){
-   //turn on motor
-     digitalWrite(top_pin,LOW); 
-     digitalWrite(bottom_pin,HIGH); 
-     delay(on_pulse_width);
-     digitalWrite(top_pin,HIGH); 
-     digitalWrite(bottom_pin,LOW);
-     delay(period-on_pulse_width);
-  }
+  delay (abs(on_time));
+  digitalWrite(port_pin, LOW);
+  digitalWrite(starboard_pin, LOW);
   return 0;
+  Serial.println("Turn completed.");
 }
   
-int stop_turn(){
-  //turn everything off
-  digitalWrite(2, HIGH); 
-  digitalWrite(3, LOW); 
-  digitalWrite(4, HIGH); 
-  digitalWrite(5, LOW);
-}
-
-int test_motor(){
-  for (int i=0; i <= 100; i++){
-    turn(i, 100, 3000, 1 );
-    delay(2000);
-  }
-}
 //end motor section
 
-//////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-//course correction variables and functions
-int course_correction(int local_course_delta){  //define function to deal with course corrections
-  int tollerable_error = 50;
-  int small_error = 100; //this is 10 degrees
-  int medium_error = 200;
-  int small_turn = 2000;  //milliseconds to run the motor
-  int medium_turn = 3000;  //milliseconds to run the motor
-  int big_turn = 4000;
-  int base_duty_cycle = 10;
-  int motor_period = 100;
-  int course_delta_magnitude;
-  // int motor_commands_array[4];
-  int port = -1;
-  int starboard = +1;
-  course_delta_magnitude = abs(local_course_delta);
-  motor_command[0] = base_duty_cycle;
-  motor_command[1] = 100; //motor period
-  
-  if (course_delta_magnitude < tollerable_error){
-    motor_command[2]=0;
-    return 0;
-  }
-  if (course_delta < 0){
-    motor_command[3] = port;
-  }
-  else{
-    motor_command[3] = starboard;
-  }
-  if (abs(course_delta) <= small_error){
-    motor_command[2] = small_turn;
-    return small_turn;
-  }
-  else if (abs(course_delta) <= medium_error ){
-    motor_command[2] = medium_turn;
-    return medium_turn;
-  }
-  else{  //we are way off course
-    //alarm();
-    motor_command[2] = big_turn;
-    return big_turn;
-  }
+//Spoke calculations;
+int spokulator(){  //define function to deal with course corrections
+  spoke_proportional =  -(float)course_delta[0] * k_proportional;    //number of spokes from proportional 
+  Serial.print ("spoke_proportional: ");
+  Serial.print ((int)spoke_proportional);  
+  spoke_derivative = (float)course_derivative[0] * k_derivative;    //number of spokes from derivative
+  Serial.print ("  spoke_derivative: ");
+  Serial.print ((int)spoke_derivative);  
+  spoke_ndderivative = ndderivative * k_ndderivative;    //number of spokes from second derivative
+  Serial.print ("  spoke_ndderivative: ");
+  Serial.print ((int)spoke_ndderivative);   
+  spoke_total = spoke_proportional + spoke_derivative + spoke_ndderivative; 
+  Serial.print ("  spoke_total: ");
+  Serial.print ((int)spoke_total);  
+  on_time = (int)(spoke_total * k_spoke_time/10);                                         //not sure this is how it's done
+  Serial.print ("  on_time: ");
+  Serial.print (on_time);  
+
 } 
-//end course correction section 
+//END COURSE CORRECTION SECTION
  
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//heading variables and funcitoins 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//WORKING WITH THE COMPASS
+
 int HMC6352Address = 0x42; 
 int slaveAddress;             // This is calculated in the setup() function 
 int ledPin = 13; 
@@ -180,22 +141,23 @@ int setup_compass(){
   //end setup compass
 }
 
-int get_heading(){
+int get_average_heading(){
   int sum=0;
   for (int i=0; i<=9; i++){
-    sum += headings[i];
+    sum += heading[i];
   }
   return sum/10;
 }
 
 int update_heading_stack(){
   for (int i=9; i>=0; i--){
-    headings[i]=headings[i-1];
+    heading[i]=heading[i-1];
   }
-  headings[0] = get_current_heading();
+  heading[0] = read_compass();
 }
 
-int get_current_heading(){  //dummy definition of getheading function 
+int read_compass(){  
+  int offset=0;   //offset is the ammount to adjust compass readings by to match installed angle
   // Flash the LED on pin 13 just to show that something is happening 
   // Also serves as an indication that we're not "stuck" waiting for TWI data 
   ledState = !ledState; 
@@ -203,25 +165,25 @@ int get_current_heading(){  //dummy definition of getheading function
     digitalWrite(ledPin,HIGH); 
   } 
   else { 
-    digitalWrite(ledPin,LOW); 
+    digitalWrite(ledPin,LOW);
   } 
   // Send a "A" command to the HMC6352 
   // This requests the current heading data 
-  Wire.beginTransmission(slaveAddress); 
+  Wire.beginTransmission(slaveAddress);
   Wire.send("A");              // The "Get Data" command 
   Wire.endTransmission(); 
   delay(10);                   // The HMC6352 needs at least a 70us (microsecond) delay 
                                // after this command.  Using 10ms just makes it safe 
   // Read the 2 heading bytes, MSB first 
   // The resulting 16bit word is the compass heading in 10th's of a degree 
-  // For example: a heading of 1345 would be 134.5 degrees 
-  Wire.requestFrom(slaveAddress, 2);        // Request the 2 byte heading (MSB comes first) 
-  i = 0; 
-  while(Wire.available() && i < 2) {  
-    headingData[i] = Wire.receive(); 
-    i++; 
-  } 
-  headingValue = headingData[0]*256 + headingData[1];  // Put the MSB and LSB together 
+  // For example: a heading of 1345 would be 134.5 degrees
+  Wire.requestFrom(slaveAddress, 2);        // Request the 2 byte heading (MSB comes first)
+  i = 0;
+  while(Wire.available() && i < 2) {
+    headingData[i] = Wire.receive();
+    i++;
+  }
+  headingValue = (headingData[0]*256 + headingData[1]) + offset;  // Put the MSB and LSB together 
 //  Serial.print("Current heading: "); 
 //  Serial.print(int (headingValue / 10));     // The whole number part of the heading 
 //  Serial.print("."); 
@@ -229,5 +191,19 @@ int get_current_heading(){  //dummy definition of getheading function
 //  Serial.println(" degrees"); 
   return headingValue;
   //delay(200); 
-} 
-//end heading sectioin
+}
+//end WORKING WITH THE COMPASS
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/* CUTTING ROOM FLOOR
+
+  while (youreOK){
+    for (int i=0; i<9; i++){
+      update_heading_stack();
+      delay(200);
+      
+    Serial.print(": Current heading: ");
+    Serial.print(int (average_heading));
+    Serial.print("\tcourse_delta: ");
+    Serial.print(int (course_delta));
+
+    */
